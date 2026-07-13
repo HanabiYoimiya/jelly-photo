@@ -17,6 +17,9 @@ export class App {
     this.tool = 'brush'
     this.brushRadius = 40
     this._painting = false
+    // 双指缩放/平移：活动指针表 + pinch 状态（PAINT/PLAY 均可用，见 _onPointerDown/Move/Up）
+    this._pointers = new Map() // pointerId -> {x,y}（相对 canvas 左上角，即 stage 坐标空间）
+    this._pinching = false
     this._bindUI()
     window.addEventListener('resize', () => this._onResize())
   }
@@ -53,11 +56,70 @@ export class App {
     this.$('clearBtn').onclick = () => { this.maskPainter.clear(); this._redrawMask() }
     this.$('brushSize').oninput = (e) => { this.brushRadius = parseFloat(e.target.value) }
     this.$('startBtn').onclick = () => this._start()
-    // 涂抹 pointer（仅 PAINT 生效）
+    // 指针管理：单指涂抹（仅 PAINT）+ 双指缩放/平移（PAINT/PLAY 都可用）
     const c = this.app.canvas
-    c.addEventListener('pointerdown', (e) => this.state === 'PAINT' && (this._painting = true, this._paintAt(e)))
-    window.addEventListener('pointermove', (e) => this.state === 'PAINT' && this._painting && this._paintAt(e))
-    window.addEventListener('pointerup', () => this._painting = false)
+    c.addEventListener('pointerdown', (e) => this._onPointerDown(e))
+    window.addEventListener('pointermove', (e) => this._onPointerMove(e))
+    window.addEventListener('pointerup', (e) => this._onPointerUp(e))
+    window.addEventListener('pointercancel', (e) => this._onPointerUp(e))
+  }
+
+  // 把 pointer 事件坐标换成相对 canvas 左上角（stage 坐标空间，与 world.position 同一空间）
+  _pagePoint(e) {
+    const r = this.app.canvas.getBoundingClientRect()
+    return { x: e.clientX - r.left, y: e.clientY - r.top }
+  }
+
+  _onPointerDown(e) {
+    this._pointers.set(e.pointerId, this._pagePoint(e))
+    if (this._pointers.size === 2) {
+      this._startPinch()
+    } else if (this._pointers.size === 1 && this.state === 'PAINT' && !this._pinching) {
+      this._painting = true
+      this._paintAt(e)
+    }
+  }
+
+  _onPointerMove(e) {
+    if (!this._pointers.has(e.pointerId)) return
+    this._pointers.set(e.pointerId, this._pagePoint(e))
+    if (this._pinching && this._pointers.size >= 2) { this._updatePinch(); return }
+    if (this.state === 'PAINT' && this._painting && !this._pinching) this._paintAt(e)
+  }
+
+  _onPointerUp(e) {
+    this._pointers.delete(e.pointerId)
+    if (this._pointers.size < 2 && this._pinching) {
+      this._pinching = false
+      if (this.drag) this.drag.suspended = false
+    }
+    if (this._pointers.size === 0) this._painting = false
+  }
+
+  // 第二根手指落下：进入 pinch 模式，挂起单指涂抹/拖拽，记录缩放锚点
+  _startPinch() {
+    this._pinching = true
+    this._painting = false
+    if (this.drag) { this.drag.cancelActive(); this.drag.suspended = true }
+    const [p1, p2] = [...this._pointers.values()]
+    this._pinchStartDist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
+    this._pinchStartMid = mid
+    this._pinchStartScale = this.world.scale.x
+    this._pinchAnchor = {
+      x: (mid.x - this.world.position.x) / this._pinchStartScale,
+      y: (mid.y - this.world.position.y) / this._pinchStartScale,
+    }
+  }
+
+  // pinch 移动：按双指间距比缩放，以双指中点为锚点（锚点在内容上的对应位置缩放前后不变）
+  _updatePinch() {
+    const [p1, p2] = [...this._pointers.values()]
+    const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
+    const scale = Math.min(5, Math.max(1, this._pinchStartScale * dist / this._pinchStartDist))
+    this.world.scale.set(scale)
+    this.world.position.set(mid.x - this._pinchAnchor.x * scale, mid.y - this._pinchAnchor.y * scale)
   }
 
   _toast(msg, ms = 2600) {
@@ -92,13 +154,21 @@ export class App {
     this.mesh = new JellyMesh(texture, this.grid, this.fit.width, this.fit.height)
     this.mesh.mesh.position.set(this.fit.x, this.fit.y)
     this.mesh.initGridFromGeometry()
-    this.app.stage.addChild(this.mesh.mesh)
     // 涂抹相关
     this.maskPainter = new MaskPainter(cols, rows, this.fit.width, this.fit.height)
     this.maskGfx = new Graphics(); this.maskLayer = new Container()
     this.maskLayer.position.set(this.fit.x, this.fit.y)
     this.maskLayer.addChild(this.maskGfx)
-    this.app.stage.addChild(this.maskLayer)
+    // world 容器包住 mesh+maskLayer，双指缩放/平移只作用在 world 上（见 _startPinch/_updatePinch），
+    // mesh/maskLayer 内部仍按 fit 布局，互不干扰
+    this.world = new Container()
+    this.world.addChild(this.mesh.mesh)
+    this.world.addChild(this.maskLayer)
+    this.world.scale.set(1)
+    this.world.position.set(0, 0)
+    this.app.stage.addChild(this.world)
+    this._pointers.clear()
+    this._pinching = false
     this._enterPaint()
   }
 
@@ -109,12 +179,11 @@ export class App {
   }
 
   _paintAt(e) {
-    const r = this.app.canvas.getBoundingClientRect()
-    const s = this.fit.scale || 1
-    const lx = (e.clientX - r.left - this.fit.x) / s
-    const ly = (e.clientY - r.top - this.fit.y) / s
-    if (this.tool === 'brush') this.maskPainter.paint(lx, ly, this.brushRadius, 0.5)
-    else this.maskPainter.erase(lx, ly, this.brushRadius, 0.5)
+    // toLocal 穿透 mesh 自身 position/width-scale + 父级 world 的双指缩放/平移，
+    // 直接得到网格空间坐标 [0,fit.width]×[0,fit.height]，不再需要手写 fit.scale 换算
+    const p = this.mesh.mesh.toLocal(this._pagePoint(e))
+    if (this.tool === 'brush') this.maskPainter.paint(p.x, p.y, this.brushRadius, 0.5)
+    else this.maskPainter.erase(p.x, p.y, this.brushRadius, 0.5)
     this._redrawMask()
   }
 
@@ -165,8 +234,8 @@ export class App {
       this.panel.mount(this.$('panel'))
     }
     this.panel.show()
-    // 拖拽
-    this.drag = new DragInput(this.app.canvas, this.solver, this.grid, this.fit)
+    // 拖拽（坐标源改用 mesh 的 toLocal，见 DragInput._local，穿透 world 缩放/平移）
+    this.drag = new DragInput(this.app.canvas, this.solver, this.grid, this.mesh.mesh)
     this.drag.enable()
     // 甩动
     this.shake = new ShakeInput(this.solver, this.params)
@@ -200,6 +269,8 @@ export class App {
     this.drag && this.drag.disable()
     this.shake && this.shake.stop()
     this.app.stage.removeChildren()
+    this._pointers.clear()
+    this._pinching = false
     this.$('paintUI').classList.add('hidden')
     this.$('uploadUI').classList.remove('hidden')
   }

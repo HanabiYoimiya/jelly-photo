@@ -1,12 +1,14 @@
 const GRAB_RADIUS = 60 // 局部像素，超出不抓取
 
 export class DragInput {
-  constructor(canvas, solver, grid, offset) {
+  constructor(canvas, solver, grid, meshObj) {
     this.canvas = canvas
     this.solver = solver
     this.grid = grid
-    this.offset = offset // {x,y} mesh 左上角在页面中的位置
+    this.meshObj = meshObj // PIXI 显示对象（mesh.mesh）：用其 toLocal 把指针坐标换成网格空间，
+    // 自动穿透父级 world 的双指缩放/平移 + mesh 自身 position/width-scale（见 App._pagePoint 同一坐标空间）
     this.active = false
+    this.suspended = false // 双指 pinch 期间由 App 置 true，挂起单指拖拽（见 App._startPinch/_onPointerUp）
     this._down = this._down.bind(this)
     this._move = this._move.bind(this)
     this._up = this._up.bind(this)
@@ -29,8 +31,7 @@ export class DragInput {
 
   _local(e) {
     const r = this.canvas.getBoundingClientRect()
-    const s = this.offset.scale || 1
-    return { x: (e.clientX - r.left - this.offset.x) / s, y: (e.clientY - r.top - this.offset.y) / s }
+    return this.meshObj.toLocal({ x: e.clientX - r.left, y: e.clientY - r.top })
   }
 
   findNearestSoft(lx, ly) {
@@ -45,6 +46,7 @@ export class DragInput {
   }
 
   _down(e) {
+    if (this.suspended) return
     const p = this._local(e)
     const i = this.findNearestSoft(p.x, p.y)
     if (i < 0) return
@@ -52,11 +54,18 @@ export class DragInput {
     this.solver.setPin(i, p.x, p.y)
   }
   _move(e) {
-    if (!this.active) return
+    if (!this.active || this.suspended) return
     const p = this._local(e)
     this.solver.setPin(this.solver.pinIndex, p.x, p.y)
   }
   _up() {
+    if (!this.active) return
+    this.active = false
+    this.solver.clearPin()
+  }
+
+  // pinch 开始时被 App 调用：立刻结束进行中的单指拖拽（松开钉住点）；未在拖拽时是 no-op
+  cancelActive() {
     if (!this.active) return
     this.active = false
     this.solver.clearPin()
