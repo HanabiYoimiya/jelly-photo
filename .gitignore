@@ -10,3 +10,5 @@ dist/
 # 系统文件
 .DS_Store
 *.log
+dist-single/
+果冻照片.html
