@@ -5,9 +5,7 @@ const MAX_STRETCH = 3 // 邻居相对位移不超过原始间距的 3 倍，防�
 export class SpringSolver {
   constructor(grid) {
     this.g = grid
-    this.pinIndex = -1
-    this.pinX = 0
-    this.pinY = 0
+    this.pins = new Map() // index → {x, y}，本帧被强制钉住的网点集合
   }
 
   applyImpulse(ax, ay, scale) {
@@ -20,8 +18,16 @@ export class SpringSolver {
     }
   }
 
-  setPin(index, x, y) { this.pinIndex = index; this.pinX = x; this.pinY = y }
-  clearPin() { this.pinIndex = -1 }
+  // 整体替换当前钉住集合；接受 Map 或 index→{x,y} 的普通对象
+  setPins(map) {
+    this.pins.clear()
+    if (map instanceof Map) {
+      for (const [i, p] of map) this.pins.set(i, p)
+    } else if (map) {
+      for (const k in map) this.pins.set(Number(k), map[k])
+    }
+  }
+  clearPins() { this.pins.clear() }
 
   step(dt, params) {
     const g = this.g
@@ -33,7 +39,7 @@ export class SpringSolver {
       // 软度0：固定锚点
       if (g.softness[i] <= 0) { g.x[i] = g.restX[i]; g.y[i] = g.restY[i]; g.vx[i] = 0; g.vy[i] = 0; continue }
       // 钉住点：强制贴合手指
-      if (i === this.pinIndex) { g.x[i] = this.pinX; g.y[i] = this.pinY; g.vx[i] = 0; g.vy[i] = 0; continue }
+      if (this.pins.has(i)) { const p = this.pins.get(i); g.x[i] = p.x; g.y[i] = p.y; g.vx[i] = 0; g.vy[i] = 0; continue }
 
       const col = i % cols
       const row = (i - col) / cols

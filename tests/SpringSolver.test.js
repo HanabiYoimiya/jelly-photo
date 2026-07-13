@@ -52,7 +52,7 @@ describe('SpringSolver', () => {
   it('钉住的网点保持在钉住坐标', () => {
     const g = makeGrid(2, 1, 100, 0, 1)
     const s = new SpringSolver(g)
-    s.setPin(1, 80, 25)
+    s.setPins(new Map([[1, { x: 80, y: 25 }]]))
     for (let k = 0; k < 60; k++) s.step(1 / 60, PARAMS)
     expect(g.x[1]).toBeCloseTo(80)
     expect(g.y[1]).toBeCloseTo(25)
@@ -61,7 +61,7 @@ describe('SpringSolver', () => {
   it('拖动钉住点会把邻居软网点拉着跟随（拉丝）', () => {
     const g = makeGrid(3, 1, 100, 0, 1)
     const s = new SpringSolver(g)
-    s.setPin(2, 130, 0) // 把右端点向右拖 30
+    s.setPins(new Map([[2, { x: 130, y: 0 }]])) // 把右端点向右拖 30
     for (let k = 0; k < 120; k++) s.step(1 / 60, PARAMS)
     // 中间点应被邻居弹簧拉向右，超过原位
     expect(g.x[1]).toBeGreaterThan(g.restX[1])
@@ -82,7 +82,7 @@ describe('SpringSolver', () => {
   it('邻居弹簧最大拉伸钳制：极端拖拽下位移保持有界（不被拉烂）', () => {
     const g = makeGrid(3, 1, 100, 0, 1) // 邻居间距 50，钳制上限 |50|*3+1=151
     const s = new SpringSolver(g)
-    s.setPin(2, 5000, 0) // 把右端拖到极远，远超钳制上限
+    s.setPins(new Map([[2, { x: 5000, y: 0 }]])) // 把右端拖到极远，远超钳制上限
     for (let k = 0; k < 60; k++) s.step(1 / 60, PARAMS)
     // 有钳制：邻居力被封顶，中间点在回位弹簧作用下收敛到有限有界位置
     // 无钳制：力随距离无界增长，中间点会飞到数十万量级

@@ -1,4 +1,4 @@
-const GRAB_RADIUS = 60 // 局部像素，超出不抓取
+const DRAG_GRAB = 70 // 抓取半径：落点这个范围内所有软网点一起被抓住组成"一片"，没有软点则视为落空
 
 export class DragInput {
   constructor(canvas, solver, grid, meshObj) {
@@ -12,6 +12,7 @@ export class DragInput {
     this._pointerId = null // 当前抓取所属的 pointerId：_up 靠它判断"抬起的是不是正在拖拽的那根手指"，
     // 否则 2→1 过渡时 App._onPointerUp 里 resumeAt() 刚重新抓起剩下那根手指，
     // 紧接着触发本类自己监听的同一个 pointerup（抬起的是另一根、刚失效的手指）会把它清掉
+    this._grabbed = [] // 本次抓取的一片软网点：[{i, dx, dy}, ...]，dx/dy 为该点相对抓取落点的原始偏移
     this._down = this._down.bind(this)
     this._move = this._move.bind(this)
     this._up = this._up.bind(this)
@@ -28,7 +29,8 @@ export class DragInput {
     window.removeEventListener('pointermove', this._move)
     window.removeEventListener('pointerup', this._up)
     window.removeEventListener('pointercancel', this._up)
-    this.solver.clearPin()
+    this.solver.clearPins()
+    this._grabbed = []
     this.active = false
     this._pointerId = null
   }
@@ -38,30 +40,39 @@ export class DragInput {
     return this.meshObj.toLocal({ x: e.clientX - r.left, y: e.clientY - r.top })
   }
 
-  findNearestSoft(lx, ly) {
+  // 在 localPoint 处尝试抓取一片软网点（圆润"一块"，而非单点）：
+  // 落点 DRAG_GRAB 半径内所有软网点都记录相对偏移并一起钉住；半径内没有软点则视为落空。
+  // 成功返回 true 并把 pins 推给 solver；落空返回 false（不改动任何状态）。
+  _grabAt(localPoint) {
     const g = this.grid
-    let best = -1, bestD = Infinity
+    const grabbed = []
     for (let i = 0; i < g.softness.length; i++) {
       if (g.softness[i] <= 0) continue
-      const d = Math.hypot(g.restX[i] - lx, g.restY[i] - ly)
-      if (d < bestD) { bestD = d; best = i }
+      const dx = g.restX[i] - localPoint.x
+      const dy = g.restY[i] - localPoint.y
+      if (Math.hypot(dx, dy) <= DRAG_GRAB) grabbed.push({ i, dx, dy })
     }
-    return bestD <= GRAB_RADIUS ? best : -1
+    if (grabbed.length === 0) return false
+    this._grabbed = grabbed
+    const pins = new Map()
+    for (const { i, dx, dy } of grabbed) pins.set(i, { x: localPoint.x + dx, y: localPoint.y + dy })
+    this.solver.setPins(pins)
+    return true
   }
 
   _down(e) {
     if (this.suspended) return
     const p = this._local(e)
-    const i = this.findNearestSoft(p.x, p.y)
-    if (i < 0) return
+    if (!this._grabAt(p)) return
     this.active = true
     this._pointerId = e.pointerId
-    this.solver.setPin(i, p.x, p.y)
   }
   _move(e) {
     if (!this.active || this.suspended) return
     const p = this._local(e)
-    this.solver.setPin(this.solver.pinIndex, p.x, p.y)
+    const pins = new Map()
+    for (const { i, dx, dy } of this._grabbed) pins.set(i, { x: p.x + dx, y: p.y + dy })
+    this.solver.setPins(pins)
   }
   _up(e) {
     if (!this.active) return
@@ -70,7 +81,8 @@ export class DragInput {
     if (e && this._pointerId != null && e.pointerId !== this._pointerId) return
     this.active = false
     this._pointerId = null
-    this.solver.clearPin()
+    this._grabbed = []
+    this.solver.clearPins()
   }
 
   // 双指→单指过渡时被 App 调用：不等新的 pointerdown，直接用剩下那根手指当前位置
@@ -82,11 +94,9 @@ export class DragInput {
   resumeAt(x, y, pointerId) {
     if (this.suspended) return
     const p = this.meshObj.toLocal({ x, y })
-    const i = this.findNearestSoft(p.x, p.y)
-    if (i < 0) return
+    if (!this._grabAt(p)) return
     this.active = true
     this._pointerId = pointerId
-    this.solver.setPin(i, p.x, p.y)
   }
 
   // pinch 开始时被 App 调用：立刻结束进行中的单指拖拽（松开钉住点）；未在拖拽时是 no-op
@@ -94,6 +104,7 @@ export class DragInput {
     if (!this.active) return
     this.active = false
     this._pointerId = null
-    this.solver.clearPin()
+    this._grabbed = []
+    this.solver.clearPins()
   }
 }
