@@ -89,15 +89,30 @@ export class App {
 
   _onPointerUp(e) {
     this._pointers.delete(e.pointerId)
+    const wasPinching = this._pinching
     if (this._pointers.size < 2 && this._pinching) {
       this._pinching = false
       if (this.drag) this.drag.suspended = false
     }
     if (this._pointers.size === 0) this._painting = false
+    // 双指→单指转换：pinch 期间单指涂抹/拖拽的标志位被清空了（见 _startPinch），
+    // 这里如果只是抬起了其中一根手指、还剩一根按着，必须当场把剩下这根手指重新挂上，
+    // 否则它会一直"死"到完全抬起再重新按下为止（R3 pinch 引入的 2→1 手指过渡缺口）
+    if (wasPinching && this._pointers.size === 1) {
+      const [[rid, rp]] = this._pointers.entries()
+      if (this.state === 'PAINT') {
+        this._painting = true
+        this._paintAtLocal(this.mesh.mesh.toLocal(rp))
+      } else if (this.state === 'PLAY' && this.drag) {
+        this.drag.suspended = false
+        this.drag.resumeAt(rp.x, rp.y, rid)
+      }
+    }
   }
 
   // 第二根手指落下：进入 pinch 模式，挂起单指涂抹/拖拽，记录缩放锚点
   _startPinch() {
+    if (!this.world) return
     this._pinching = true
     this._painting = false
     if (this.drag) { this.drag.cancelActive(); this.drag.suspended = true }
@@ -181,7 +196,11 @@ export class App {
   _paintAt(e) {
     // toLocal 穿透 mesh 自身 position/width-scale + 父级 world 的双指缩放/平移，
     // 直接得到网格空间坐标 [0,fit.width]×[0,fit.height]，不再需要手写 fit.scale 换算
-    const p = this.mesh.mesh.toLocal(this._pagePoint(e))
+    this._paintAtLocal(this.mesh.mesh.toLocal(this._pagePoint(e)))
+  }
+
+  // 已经算好网格空间坐标时直接画（2→1 手指过渡时用，见 _onPointerUp）
+  _paintAtLocal(p) {
     if (this.tool === 'brush') this.maskPainter.paint(p.x, p.y, this.brushRadius, 0.5)
     else this.maskPainter.erase(p.x, p.y, this.brushRadius, 0.5)
     this._redrawMask()
