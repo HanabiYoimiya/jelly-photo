@@ -123,10 +123,11 @@ export class App {
     const g = this.grid, s = this.maskPainter.getSoftness()
     const gfx = this.maskGfx; gfx.clear()
     const cw = this.fit.width / (g.cols - 1), ch = this.fit.height / (g.rows - 1)
+    const r = Math.max(cw, ch) * 1.3
     for (let i = 0; i < s.length; i++) {
       if (s[i] <= 0) continue
       const col = i % g.cols, row = (i - i % g.cols) / g.cols
-      gfx.rect(col * cw - cw / 2, row * ch - ch / 2, cw, ch).fill({ color: 0x3a6df0, alpha: 0.35 * s[i] })
+      gfx.circle(col * cw, row * ch, r).fill({ color: 0x3a6df0, alpha: 0.28 * s[i] })
     }
   }
 
