@@ -78,4 +78,15 @@ describe('SpringSolver', () => {
     const late = disp()
     expect(late).toBeLessThan(early)
   })
+
+  it('邻居弹簧最大拉伸钳制：极端拖拽下位移保持有界（不被拉烂）', () => {
+    const g = makeGrid(3, 1, 100, 0, 1) // 邻居间距 50，钳制上限 |50|*3+1=151
+    const s = new SpringSolver(g)
+    s.setPin(2, 5000, 0) // 把右端拖到极远，远超钳制上限
+    for (let k = 0; k < 60; k++) s.step(1 / 60, PARAMS)
+    // 有钳制：邻居力被封顶，中间点在回位弹簧作用下收敛到有限有界位置
+    // 无钳制：力随距离无界增长，中间点会飞到数十万量级
+    expect(Number.isFinite(g.x[1])).toBe(true)
+    expect(Math.abs(g.x[1] - g.restX[1])).toBeLessThan(1500)
+  })
 })
