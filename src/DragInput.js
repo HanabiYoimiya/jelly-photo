@@ -9,6 +9,11 @@ export class DragInput {
     // 自动穿透父级 world 的双指缩放/平移 + mesh 自身 position/width-scale（见 App._pagePoint 同一坐标空间）
     this.active = false
     this.suspended = false // 双指 pinch 期间由 App 置 true，挂起单指拖拽（见 App._startPinch/_onPointerUp）
+    // R5 红晕特效用：dragCenter 是当前手指的网格空间落点（grid-local，随 move 更新），
+    // grabOrigin 是本次抓取开始时的落点（抓取期间不变）。App 据此算拉扯距离/朝向定位红晕。
+    // 松手后二者保留最后的值（App 只在 this.active 为真时读取）。
+    this.dragCenter = { x: 0, y: 0 }
+    this.grabOrigin = { x: 0, y: 0 }
     this._pointerId = null // 当前抓取所属的 pointerId：_up 靠它判断"抬起的是不是正在拖拽的那根手指"，
     // 否则 2→1 过渡时 App._onPointerUp 里 resumeAt() 刚重新抓起剩下那根手指，
     // 紧接着触发本类自己监听的同一个 pointerup（抬起的是另一根、刚失效的手指）会把它清掉
@@ -57,6 +62,8 @@ export class DragInput {
     const pins = new Map()
     for (const { i, dx, dy } of grabbed) pins.set(i, { x: localPoint.x + dx, y: localPoint.y + dy })
     this.solver.setPins(pins)
+    this.dragCenter = { x: localPoint.x, y: localPoint.y }
+    this.grabOrigin = { x: localPoint.x, y: localPoint.y }
     return true
   }
 
@@ -73,6 +80,7 @@ export class DragInput {
     const pins = new Map()
     for (const { i, dx, dy } of this._grabbed) pins.set(i, { x: p.x + dx, y: p.y + dy })
     this.solver.setPins(pins)
+    this.dragCenter = { x: p.x, y: p.y }
   }
   _up(e) {
     if (!this.active) return

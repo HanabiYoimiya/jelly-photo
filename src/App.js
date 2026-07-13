@@ -1,5 +1,5 @@
 // src/App.js
-import { Container, Graphics } from 'pixi.js'
+import { Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { DEFAULT_PARAMS, GRID } from './config.js'
 import { loadTexture, computeFit, computeGridSize } from './ImageLoader.js'
 import { MaskPainter } from './MaskPainter.js'
@@ -20,8 +20,30 @@ export class App {
     // 双指缩放/平移：活动指针表 + pinch 状态（PAINT/PLAY 均可用，见 _onPointerDown/Move/Up）
     this._pointers = new Map() // pointerId -> {x,y}（相对 canvas 左上角，即 stage 坐标空间）
     this._pinching = false
+    // R5 拖拽处肤色红晕：纹理只造一次（离屏 canvas 径向渐变），精灵随每次上传重建（见 _onFile）
+    this._blushTex = this._buildBlushTexture()
+    this._blush = null
+    this._blushAlpha = 0
+    this._blushScale = 0
+    this._blushBloom = 0 // 按住时长缓慢外扩的额外扩散量，松手回落
     this._bindUI()
     window.addEventListener('resize', () => this._onResize())
+  }
+
+  // 造一次红晕纹理：离屏 2D canvas 画径向渐变（暖玫红，中心不透明→边缘全透），
+  // 之后每次上传照片都复用同一张纹理，只重建 Sprite（见 _onFile）。
+  _buildBlushTexture() {
+    const size = 256, r = size / 2
+    const canvas = document.createElement('canvas')
+    canvas.width = size; canvas.height = size
+    const ctx = canvas.getContext('2d')
+    const grad = ctx.createRadialGradient(r, r, 0, r, r, r)
+    grad.addColorStop(0, 'rgba(255,72,72,0.9)')
+    grad.addColorStop(0.55, 'rgba(255,96,96,0.5)')
+    grad.addColorStop(1, 'rgba(255,120,120,0)')
+    ctx.fillStyle = grad
+    ctx.fillRect(0, 0, size, size)
+    return Texture.from(canvas)
   }
 
   // 横竖屏/窗口尺寸变化：按原始宽高比重新居中铺放（不重建 grid，仅整体缩放+定位）。
@@ -179,6 +201,16 @@ export class App {
     this.world = new Container()
     this.world.addChild(this.mesh.mesh)
     this.world.addChild(this.maskLayer)
+    // R5 红晕精灵：加在 mesh 之上（PLAY 期间 maskLayer 隐藏，不会互相遮挡），
+    // 默认不可见，PLAY 拖拽时由 ticker 每帧驱动位置/透明度/大小（见 _enterPlay 的 _ticker）
+    this._blush = new Sprite(this._blushTex)
+    this._blush.anchor.set(0.5)
+    this._blush.alpha = 0
+    this._blush.visible = false
+    this.world.addChild(this._blush)
+    this._blushAlpha = 0
+    this._blushScale = 0
+    this._blushBloom = 0
     this.world.scale.set(1)
     this.world.position.set(0, 0)
     this.app.stage.addChild(this.world)
@@ -229,6 +261,9 @@ export class App {
     this.drag && this.drag.disable()
     this.shake && this.shake.stop()
     this.maskLayer.visible = true
+    // 从 PLAY 返回时红晕可能还留在半透明渐隐途中（ticker 一停就冻结在当时的 alpha），
+    // 这里显式清掉，避免涂抹模式下背景多出一块红斑
+    if (this._blush) { this._blush.visible = false; this._blushAlpha = 0; this._blushScale = 0; this._blushBloom = 0 }
     this._toast('涂抹你想要变Q弹的地方，然后点开始')
   }
 
@@ -277,8 +312,46 @@ export class App {
         }
         if (steps === 5) this._acc = 0 // 长时间挂起（切后台）后不追赶积压的模拟时间
         this.mesh.sync()
+        this._updateBlush()
       }
       this.app.ticker.add(this._ticker)
+    }
+  }
+
+  // R5 每帧驱动拖拽处红晕：拖拽中——位置贴在指尖落点、强度随拉扯距离增强、随按住时长缓慢晕开；
+  // 松手——透明度缓动回 0 后隐藏。放在 PLAY ticker 里，随物理帧一起跑（见 _enterPlay）。
+  _updateBlush() {
+    if (!this._blush) return
+    const BLUSH_TEX_R = 128 // 纹理半径（256×256 画布，见 _buildBlushTexture）
+    const BASE_RADIUS = 130 // 未拉扯时的红晕落地半径（网格空间 px），随 t 再放大
+    const baseScale = BASE_RADIUS / BLUSH_TEX_R
+    if (this.drag && this.drag.active) {
+      // 位置：drag.dragCenter 是网格空间（mesh 局部）坐标，先转成全局坐标再转回 world 局部坐标，
+      // 这样红晕跟 mesh/maskLayer 一样挂在 world 下、自然随双指缩放/平移一起走，且不受 mesh 自身
+      // position/width-scale 影响（toGlobal/toLocal 两段变换把这些都穿透掉了）
+      const gp = this.mesh.mesh.toGlobal(this.drag.dragCenter)
+      const wp = this.world.toLocal(gp)
+      this._blush.position.copyFrom(wp)
+      // 拉扯强度 t∈[0,1]：手指相对抓取起点的位移，160px（网格空间）约等于拉满
+      const dx = this.drag.dragCenter.x - this.drag.grabOrigin.x
+      const dy = this.drag.dragCenter.y - this.drag.grabOrigin.y
+      const t = Math.min(1, Math.hypot(dx, dy) / 160)
+      // 缓慢晕开：按住时持续增长的额外扩散量，封顶 +0.4（对应缩放倍数，不是 alpha）
+      this._blushBloom = Math.min(0.4, this._blushBloom + 0.006)
+      const targetAlpha = 0.4 + 0.5 * t
+      const targetScale = baseScale * (1 + 1.5 * t + this._blushBloom)
+      this._blushAlpha += (targetAlpha - this._blushAlpha) * 0.2
+      this._blushScale += (targetScale - this._blushScale) * 0.2
+      this._blush.alpha = this._blushAlpha
+      this._blush.scale.set(this._blushScale)
+      this._blush.visible = true
+    } else {
+      this._blushAlpha += (0 - this._blushAlpha) * 0.2
+      this._blush.alpha = this._blushAlpha
+      if (this._blushAlpha < 0.01) {
+        this._blush.visible = false
+        this._blushBloom = 0
+      }
     }
   }
 
