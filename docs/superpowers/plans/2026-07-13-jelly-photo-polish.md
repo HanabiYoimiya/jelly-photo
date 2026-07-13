@@ -93,5 +93,25 @@
 
 ---
 
+---
+
+### R5: 拖拽处扩散性肤色红晕（视觉特效，建在 R4 之上）
+
+**Files:** src/App.js（红晕精灵 + 每帧更新）、src/DragInput.js（暴露拖拽中心与活跃态）
+
+用户要：拖拽时被拉扯处泛出**扩散的肤色红晕**（模拟皮肤充血泛红），不透明度偏高、从拉点向外晕开、随拉扯程度增强、松手渐隐。
+
+1. **红晕纹理**：用离屏 canvas 2D 画一张径向渐变（中心暖玫红 rgba(255,80,80,~0.9)→边缘透明）→ `Texture.from(canvas)`，做成一个 `Sprite`（anchor 0.5）。加入 `this.world`、置于 mesh 之上（PLAY 时 maskLayer 隐藏，不冲突）。默认不可见（alpha=0）。
+2. **DragInput 暴露状态**：`this.active` 已有；新增 `this.dragCenter = {x,y}`（每次 move 记录当前手指的 grid-local 点，即 `_local(e)` 结果），供 App 读取；软抓取时可用抓取集中心，简单用手指点即可。
+3. **App 每帧更新红晕**（并入现有 PLAY ticker，或单独）：
+   - 若 `drag && drag.active`：红晕位置设为 `drag.dragCenter`（grid-local，与 mesh 几何同空间，随 world 缩放/平移自然跟随）；
+   - **强度随拉扯程度**：取被钉住点相对 rest 的位移量（或手指相对抓取起点距离）归一到 [0,1] 记为 `t`；目标 alpha = `0.4 + 0.5*t`（偏高、可到 ~0.9），目标缩放（半径扩散）= `1 + 1.5*t`，并叠加一个随按住时长缓慢外扩的项让它"晕开"；用简单缓动逼近目标（`cur += (target-cur)*0.2`）。
+   - 若不在拖拽：alpha 向 0 缓动（松手渐隐），到 0 后可 visible=false。
+4. **颜色**：暖玫红模拟肤色充血；`Sprite.tint` 可留白直接用纹理色。混合可用默认 normal alpha（偏高不透明），如需更"贴肤"可试 `blendMode:'add'` 但可能偏亮，默认 normal。
+
+验收：构建+21/21；无头下拖拽时红晕精灵 visible、alpha>0、位置=dragCenter、松手后 alpha 缓动回 0，无报错。红晕观感真机确认。
+
+---
+
 ## 收尾
 全部通过后：`npm run build` + `npm run build:single` 重新生成 `果冻照片.html`，提交推送（Vercel 自动部署）。真机可视手感仍由用户确认。
