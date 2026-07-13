@@ -19,6 +19,29 @@ export class App {
     this.tool = 'brush'
     this._painting = false
     this._bindUI()
+    window.addEventListener('resize', () => this._onResize())
+  }
+
+  // 横竖屏/窗口尺寸变化：按原始宽高比重新居中铺放（不重建 grid，仅整体缩放+定位）。
+  // 关键：DragInput 持有的是 this.fit 的引用（同一对象），这里必须就地改 x/y
+  //（this.fit.x = x; this.fit.y = y），不能整体替换 this.fit = {...}，
+  // 否则 DragInput 会拿着旧对象、拖拽命中位置在旋转后失准。
+  // 同理，this.fit.width/height 保持不变（不重新赋值），这样 ratio 在多次连续
+  // resize 之间不会漂移——它们始终代表图片原始的等比 contain-fit 尺寸。
+  _onResize() {
+    if (!this.fit || !this.mesh) return
+    const view = { w: this.app.screen.width, h: this.app.screen.height }
+    const ratio = this.fit.width / this.fit.height
+    let w = view.w, h = w / ratio
+    if (h > view.h) { h = view.h; w = h * ratio }
+    const x = (view.w - w) / 2, y = (view.h - h) / 2
+    this.mesh.mesh.width = w
+    this.mesh.mesh.height = h
+    this.mesh.mesh.position.set(x, y)
+    this.maskLayer && this.maskLayer.position.set(x, y)
+    this.maskLayer && this.maskLayer.scale.set(w / this.fit.width, h / this.fit.height)
+    this.fit.x = x
+    this.fit.y = y
   }
 
   _bindUI() {
