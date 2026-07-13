@@ -42,6 +42,7 @@ export class App {
     this.maskLayer && this.maskLayer.scale.set(w / this.fit.width, h / this.fit.height)
     this.fit.x = x
     this.fit.y = y
+    this.fit.scale = w / this.fit.width
   }
 
   _bindUI() {
@@ -75,6 +76,7 @@ export class App {
     }
     const { texture, imgW, imgH } = loaded
     this.fit = computeFit(imgW, imgH, view.w, view.h)
+    this.fit.scale = 1
     const { cols, rows } = computeGridSize(imgW, imgH, GRID.target, GRID.max)
     // 建共享 grid
     const n = cols * rows
@@ -108,8 +110,9 @@ export class App {
 
   _paintAt(e) {
     const r = this.app.canvas.getBoundingClientRect()
-    const lx = e.clientX - r.left - this.fit.x
-    const ly = e.clientY - r.top - this.fit.y
+    const s = this.fit.scale || 1
+    const lx = (e.clientX - r.left - this.fit.x) / s
+    const ly = (e.clientY - r.top - this.fit.y) / s
     if (this.tool === 'brush') this.maskPainter.paint(lx, ly, BRUSH_RADIUS, 0.5)
     else this.maskPainter.erase(lx, ly, BRUSH_RADIUS, 0.5)
     this._redrawMask()

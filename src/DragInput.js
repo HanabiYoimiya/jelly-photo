@@ -29,7 +29,8 @@ export class DragInput {
 
   _local(e) {
     const r = this.canvas.getBoundingClientRect()
-    return { x: e.clientX - r.left - this.offset.x, y: e.clientY - r.top - this.offset.y }
+    const s = this.offset.scale || 1
+    return { x: (e.clientX - r.left - this.offset.x) / s, y: (e.clientY - r.top - this.offset.y) / s }
   }
 
   findNearestSoft(lx, ly) {
