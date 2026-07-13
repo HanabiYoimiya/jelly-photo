@@ -12,6 +12,17 @@
 </head>
 <body>
   <div id="stage"></div>
+  <div id="panel" class="panel hidden"></div>
+  <style>
+    .panel{position:fixed;left:0;right:0;bottom:0;padding:12px 16px;background:rgba(20,20,24,.82);backdrop-filter:blur(8px);display:flex;flex-direction:column;gap:8px}
+    .panel.hidden{display:none}
+    .panel .row{display:flex;align-items:center;gap:10px;font-size:13px}
+    .panel .row label{width:72px;flex:none;opacity:.85}
+    .panel input[type=range]{flex:1}
+    .panel .btns{display:flex;gap:10px;margin-top:4px}
+    .panel button{flex:1;padding:10px;border:0;border-radius:10px;background:#3a6df0;color:#fff;font-size:14px}
+    .panel button.ghost{background:#333}
+  </style>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
