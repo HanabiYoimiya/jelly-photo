@@ -173,9 +173,22 @@ export class App {
       if (ok && ShakeInput.isSupported()) this.shake.start()
       else this._toast('当前设备不支持甩动，可以用手指拖拽玩～', 4000)
     })
-    // 物理帧循环
+    // 物理帧循环（固定步长累加器：物理速度与刷新率解耦）
+    this._acc = 0
     if (!this._ticker) {
-      this._ticker = () => { if (this.state === 'PLAY') { this.solver.step(1 / 60, this.params); this.mesh.sync() } }
+      const FIXED_MS = 1000 / 60
+      this._ticker = () => {
+        if (this.state !== 'PLAY') return
+        this._acc += this.app.ticker.deltaMS // 距上一帧的真实耗时（毫秒）
+        let steps = 0
+        while (this._acc >= FIXED_MS && steps < 5) { // 每帧最多补 5 步，避免死亡螺旋
+          this.solver.step(1 / 60, this.params)
+          this._acc -= FIXED_MS
+          steps++
+        }
+        if (steps === 5) this._acc = 0 // 长时间挂起（切后台）后不追赶积压的模拟时间
+        this.mesh.sync()
+      }
       this.app.ticker.add(this._ticker)
     }
   }
