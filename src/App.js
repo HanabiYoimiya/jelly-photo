@@ -9,14 +9,13 @@ import { ShakeInput } from './ShakeInput.js'
 import { DragInput } from './DragInput.js'
 import { ControlPanel } from './ControlPanel.js'
 
-const BRUSH_RADIUS = 40
-
 export class App {
   constructor(pixiApp) {
     this.app = pixiApp
     this.params = { ...DEFAULT_PARAMS }
     this.state = 'UPLOAD'
     this.tool = 'brush'
+    this.brushRadius = 40
     this._painting = false
     this._bindUI()
     window.addEventListener('resize', () => this._onResize())
@@ -52,6 +51,7 @@ export class App {
     this.$('toolBrush').onclick = () => this._setTool('brush')
     this.$('toolErase').onclick = () => this._setTool('erase')
     this.$('clearBtn').onclick = () => { this.maskPainter.clear(); this._redrawMask() }
+    this.$('brushSize').oninput = (e) => { this.brushRadius = parseFloat(e.target.value) }
     this.$('startBtn').onclick = () => this._start()
     // 涂抹 pointer（仅 PAINT 生效）
     const c = this.app.canvas
@@ -113,8 +113,8 @@ export class App {
     const s = this.fit.scale || 1
     const lx = (e.clientX - r.left - this.fit.x) / s
     const ly = (e.clientY - r.top - this.fit.y) / s
-    if (this.tool === 'brush') this.maskPainter.paint(lx, ly, BRUSH_RADIUS, 0.5)
-    else this.maskPainter.erase(lx, ly, BRUSH_RADIUS, 0.5)
+    if (this.tool === 'brush') this.maskPainter.paint(lx, ly, this.brushRadius, 0.5)
+    else this.maskPainter.erase(lx, ly, this.brushRadius, 0.5)
     this._redrawMask()
   }
 

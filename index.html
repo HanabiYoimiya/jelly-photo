@@ -18,6 +18,7 @@
     <button id="toolBrush" class="active">画笔</button>
     <button id="toolErase">橡皮</button>
     <button id="clearBtn" class="ghost">清空</button>
+    <input id="brushSize" type="range" min="15" max="120" value="40" title="笔刷大小" />
     <button id="startBtn">开始</button>
   </div>
   <div id="toast" class="toast hidden"></div>
@@ -29,6 +30,7 @@
     .paintbar button{flex:1;padding:10px;border:0;border-radius:10px;background:#333;color:#fff;font-size:14px}
     .paintbar button.active{background:#3a6df0}
     .paintbar button#startBtn{background:#28a745}
+    .paintbar input[type=range]{flex:1.4;min-width:60px}
     .toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);padding:8px 14px;border-radius:10px;background:rgba(0,0,0,.75);font-size:13px;max-width:90%;text-align:center}
     .toast.hidden{display:none}
   </style>
