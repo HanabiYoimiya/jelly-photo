@@ -1,0 +1,12 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 工具与本地状态
+.superpowers/
+.gstack/
+.claude/
+
+# 系统文件
+.DS_Store
+*.log
