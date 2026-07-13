@@ -43,7 +43,14 @@ export class App {
 
   async _onFile(file) {
     const view = { w: this.app.screen.width, h: this.app.screen.height }
-    const { texture, imgW, imgH } = await loadTexture(file)
+    let loaded
+    try {
+      loaded = await loadTexture(file)
+    } catch (e) {
+      this._toast('图片加载失败，请换一张')
+      return
+    }
+    const { texture, imgW, imgH } = loaded
     this.fit = computeFit(imgW, imgH, view.w, view.h)
     const { cols, rows } = computeGridSize(imgW, imgH, GRID.target, GRID.max)
     // 建共享 grid
