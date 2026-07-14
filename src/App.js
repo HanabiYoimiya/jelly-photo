@@ -1,5 +1,5 @@
 // src/App.js
-import { Container, Graphics, Sprite, Texture } from 'pixi.js'
+import { AlphaFilter, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { DEFAULT_PARAMS, GRID } from './config.js'
 import { loadTexture, computeFit, computeGridSize } from './ImageLoader.js'
 import { MaskPainter } from './MaskPainter.js'
@@ -196,6 +196,10 @@ export class App {
     this.maskGfx = new Graphics(); this.maskLayer = new Container()
     this.maskLayer.position.set(this.fit.x, this.fit.y)
     this.maskLayer.addChild(this.maskGfx)
+    // 蒙层整体隔离成一组、统一 0.4 透明度合成（而不是每个圆各自半透明再层叠加深）：
+    // AlphaFilter 把 maskLayer 的内容当整体渲染一次再统一应用 alpha，
+    // 圆形之间重叠部分不会互相叠加变深（见 _redrawMask 改为不透明填充配合这里）
+    this.maskLayer.filters = [new AlphaFilter({ alpha: 0.4 })]
     // world 容器包住 mesh+maskLayer，双指缩放/平移只作用在 world 上（见 _startPinch/_updatePinch），
     // mesh/maskLayer 内部仍按 fit 布局，互不干扰
     this.world = new Container()
@@ -238,16 +242,17 @@ export class App {
     this._redrawMask()
   }
 
-  // 用软度网格画半透明高亮蒙层
+  // 用软度网格画高亮蒙层：每个点画不透明圆（并集），整组统一透明度交给 maskLayer 的
+  // AlphaFilter（见 _onFile）去应用——这样圆之间重叠不会像半透明层叠那样越叠越深
   _redrawMask() {
     const g = this.grid, s = this.maskPainter.getSoftness()
     const gfx = this.maskGfx; gfx.clear()
     const cw = this.fit.width / (g.cols - 1), ch = this.fit.height / (g.rows - 1)
-    const r = Math.max(cw, ch) * 1.3
+    const r = Math.max(cw, ch) * 1.5 // 半径放宽些，让并集更平滑、覆盖更完整
     for (let i = 0; i < s.length; i++) {
-      if (s[i] <= 0) continue
+      if (s[i] <= 0.05) continue // 跳过几乎为零的边缘淡点
       const col = i % g.cols, row = (i - i % g.cols) / g.cols
-      gfx.circle(col * cw, row * ch, r).fill({ color: 0x3a6df0, alpha: 0.28 * s[i] })
+      gfx.circle(col * cw, row * ch, r).fill({ color: 0x3a6df0, alpha: 1 })
     }
   }
 
@@ -338,15 +343,20 @@ export class App {
       const t = Math.min(1, Math.hypot(dx, dy) / 160)
       // 缓慢晕开：按住时持续增长的额外扩散量，封顶 +0.4（对应缩放倍数，不是 alpha）
       this._blushBloom = Math.min(0.4, this._blushBloom + 0.006)
-      const targetAlpha = 0.4 + 0.5 * t
+      // 轻微碰一下（t 很小）目标透明度按 0 算，不会一拉就红；
+      // 只有持续用力拉扯（t>0.05）才会慢慢浮现出红晕
+      const targetAlpha = t > 0.05 ? 0.4 + 0.5 * t : 0
       const targetScale = baseScale * (1 + 1.5 * t + this._blushBloom)
-      this._blushAlpha += (targetAlpha - this._blushAlpha) * 0.2
-      this._blushScale += (targetScale - this._blushScale) * 0.2
+      // 浮现要慢：缓动系数 0.04（远小于原来的 0.2），持续拉满大约需要 1~1.5s 才贴近目标值，
+      // 读起来是"渐渐浮现"而不是一拉就跳出来
+      this._blushAlpha += (targetAlpha - this._blushAlpha) * 0.04
+      this._blushScale += (targetScale - this._blushScale) * 0.04
       this._blush.alpha = this._blushAlpha
       this._blush.scale.set(this._blushScale)
-      this._blush.visible = true
+      this._blush.visible = this._blushAlpha > 0.01
     } else {
-      this._blushAlpha += (0 - this._blushAlpha) * 0.2
+      // 松手：透明度缓动回 0，系数 0.06，约 0.5~1s 内淡出
+      this._blushAlpha += (0 - this._blushAlpha) * 0.06
       this._blush.alpha = this._blushAlpha
       if (this._blushAlpha < 0.01) {
         this._blush.visible = false
