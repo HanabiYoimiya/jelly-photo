@@ -1,5 +1,5 @@
 // src/App.js
-import { AlphaFilter, Container, Graphics, Sprite, Texture } from 'pixi.js'
+import { Container, Graphics, RenderTexture, Sprite, Texture } from 'pixi.js'
 import { DEFAULT_PARAMS, GRID } from './config.js'
 import { loadTexture, computeFit, computeGridSize } from './ImageLoader.js'
 import { MaskPainter } from './MaskPainter.js'
@@ -26,6 +26,10 @@ export class App {
     this._blushAlpha = 0
     this._blushScale = 0
     this._blushBloom = 0 // 按住时长缓慢外扩的额外扩散量，松手回落
+    // 涂抹高亮：沿实际笔迹画的临时 Graphics（每次画一段就 clear 复用），配合 _paintStroke 渲染进 RT
+    this._stamp = new Graphics()
+    // 当前笔画的上一个点（网格空间坐标）；null 表示新笔画刚开始，见 _paintAtLocal/_onPointerDown/_onPointerUp
+    this._lastPaintPt = null
     this._bindUI()
     window.addEventListener('resize', () => this._onResize())
   }
@@ -75,7 +79,7 @@ export class App {
     this.$('file').onchange = (e) => e.target.files[0] && this._onFile(e.target.files[0])
     this.$('toolBrush').onclick = () => this._setTool('brush')
     this.$('toolErase').onclick = () => this._setTool('erase')
-    this.$('clearBtn').onclick = () => { this.maskPainter.clear(); this._redrawMask() }
+    this.$('clearBtn').onclick = () => this._clearMask()
     this.$('brushSize').oninput = (e) => { this.brushRadius = parseFloat(e.target.value) }
     this.$('startBtn').onclick = () => this._start()
     // 指针管理：单指涂抹（仅 PAINT）+ 双指缩放/平移（PAINT/PLAY 都可用）
@@ -98,6 +102,7 @@ export class App {
       this._startPinch()
     } else if (this._pointers.size === 1 && this.state === 'PAINT' && !this._pinching) {
       this._painting = true
+      this._lastPaintPt = null // 新笔画开始，别跟上一笔连起来
       this._paintAt(e)
     }
   }
@@ -124,6 +129,7 @@ export class App {
       const [[rid, rp]] = this._pointers.entries()
       if (this.state === 'PAINT') {
         this._painting = true
+        this._lastPaintPt = null // 这根手指是"重新落下"的，也算新笔画开始
         this._paintAtLocal(this.mesh.mesh.toLocal(rp))
       } else if (this.state === 'PLAY' && this.drag) {
         this.drag.suspended = false
@@ -191,15 +197,24 @@ export class App {
     this.mesh = new JellyMesh(texture, this.grid, this.fit.width, this.fit.height)
     this.mesh.mesh.position.set(this.fit.x, this.fit.y)
     this.mesh.initGridFromGeometry()
-    // 涂抹相关
+    // 涂抹相关：物理软度网格（驱动果冻抖动）+ 视觉高亮（沿笔迹画进 RenderTexture）两条线分开
     this.maskPainter = new MaskPainter(cols, rows, this.fit.width, this.fit.height)
-    this.maskGfx = new Graphics(); this.maskLayer = new Container()
+    // 高亮 RT：网格本地空间 [0,fit.width]×[0,fit.height]，与 toLocal 出来的涂抹坐标同一空间。
+    // 笔画（圆头连续线段）画进这张纹理里，union 出来的边缘天然是丝滑弧线，不再是每个网格点一个圆
+    // 拼出来的毛毛虫锯齿（旧 _redrawMask 的问题）。
+    this._maskRT = RenderTexture.create({
+      width: Math.round(this.fit.width),
+      height: Math.round(this.fit.height),
+      antialias: true,
+    })
+    this._maskSprite = new Sprite(this._maskRT)
+    this._maskSprite.tint = 0x3a6df0
+    this._maskSprite.alpha = 0.4
+    this._maskSprite.position.set(0, 0)
+    this.maskLayer = new Container()
     this.maskLayer.position.set(this.fit.x, this.fit.y)
-    this.maskLayer.addChild(this.maskGfx)
-    // 蒙层整体隔离成一组、统一 0.4 透明度合成（而不是每个圆各自半透明再层叠加深）：
-    // AlphaFilter 把 maskLayer 的内容当整体渲染一次再统一应用 alpha，
-    // 圆形之间重叠部分不会互相叠加变深（见 _redrawMask 改为不透明填充配合这里）
-    this.maskLayer.filters = [new AlphaFilter({ alpha: 0.4 })]
+    this.maskLayer.addChild(this._maskSprite)
+    this._lastPaintPt = null
     // world 容器包住 mesh+maskLayer，双指缩放/平移只作用在 world 上（见 _startPinch/_updatePinch），
     // mesh/maskLayer 内部仍按 fit 布局，互不干扰
     this.world = new Container()
@@ -237,22 +252,39 @@ export class App {
 
   // 已经算好网格空间坐标时直接画（2→1 手指过渡时用，见 _onPointerUp）
   _paintAtLocal(p) {
-    if (this.tool === 'brush') this.maskPainter.paint(p.x, p.y, this.brushRadius, 0.5)
-    else this.maskPainter.erase(p.x, p.y, this.brushRadius, 0.5)
-    this._redrawMask()
+    const erase = this.tool === 'erase'
+    // 物理软度网格照旧更新（果冻抖动只看这个，跟视觉高亮完全解耦）
+    if (erase) this.maskPainter.erase(p.x, p.y, this.brushRadius, 0.5)
+    else this.maskPainter.paint(p.x, p.y, this.brushRadius, 0.5)
+    // 视觉高亮：从上一个点连一段圆头粗线到当前点；_lastPaintPt 为空（笔画刚开始）时
+    // from===to，退化成一个圆点（配合下面显式画的头部圆，效果就是一个笔刷起点）
+    const from = this._lastPaintPt || p
+    this._paintStroke(from, p, erase)
+    this._lastPaintPt = p
   }
 
-  // 用软度网格画高亮蒙层：每个点画不透明圆（并集），整组统一透明度交给 maskLayer 的
-  // AlphaFilter（见 _onFile）去应用——这样圆之间重叠不会像半透明层叠那样越叠越深
-  _redrawMask() {
-    const g = this.grid, s = this.maskPainter.getSoftness()
-    const gfx = this.maskGfx; gfx.clear()
-    const cw = this.fit.width / (g.cols - 1), ch = this.fit.height / (g.rows - 1)
-    const r = Math.max(cw, ch) * 1.5 // 半径放宽些，让并集更平滑、覆盖更完整
-    for (let i = 0; i < s.length; i++) {
-      if (s[i] <= 0.05) continue // 跳过几乎为零的边缘淡点
-      const col = i % g.cols, row = (i - i % g.cols) / g.cols
-      gfx.circle(col * cw, row * ch, r).fill({ color: 0x3a6df0, alpha: 1 })
+  // 把一段笔迹（圆头圆角粗线 + 头部圆）画进 _maskRT。笔刷/橡皮共用这段逻辑，
+  // 橡皮用 'erase' 混合模式（destination-out）从 RT 里抠掉覆盖的白色区域。
+  // clear:false 让笔画之间不断累积覆盖（同一像素被多次覆盖也只是保持不透明，不会越叠越深——
+  // 深浅统一交给 _maskSprite 的 alpha=0.4 去决定，见 _onFile）。
+  _paintStroke(fromPt, toPt, erase) {
+    const g = this._stamp
+    g.clear()
+    g.moveTo(fromPt.x, fromPt.y).lineTo(toPt.x, toPt.y)
+    g.stroke({ width: 2 * this.brushRadius, color: 0xffffff, alpha: 1, cap: 'round', join: 'round' })
+    g.circle(toPt.x, toPt.y, this.brushRadius).fill({ color: 0xffffff, alpha: 1 })
+    g.blendMode = erase ? 'erase' : 'normal'
+    this.app.renderer.render({ container: g, target: this._maskRT, clear: false })
+  }
+
+  // 清空高亮 RT + 物理软度网格（Clear 按钮用）
+  _clearMask() {
+    this.maskPainter.clear()
+    this._lastPaintPt = null
+    if (this._maskRT) {
+      const g = this._stamp
+      g.clear()
+      this.app.renderer.render({ container: g, target: this._maskRT, clear: true })
     }
   }
 
