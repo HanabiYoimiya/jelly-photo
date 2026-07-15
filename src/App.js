@@ -202,6 +202,7 @@ export class App {
     // 高亮 RT：网格本地空间 [0,fit.width]×[0,fit.height]，与 toLocal 出来的涂抹坐标同一空间。
     // 笔画（圆头连续线段）画进这张纹理里，union 出来的边缘天然是丝滑弧线，不再是每个网格点一个圆
     // 拼出来的毛毛虫锯齿（旧 _redrawMask 的问题）。
+    this._maskRT?.destroy(true)
     this._maskRT = RenderTexture.create({
       width: Math.round(this.fit.width),
       height: Math.round(this.fit.height),
