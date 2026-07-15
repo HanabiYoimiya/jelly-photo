@@ -9,13 +9,16 @@ import { ShakeInput } from './ShakeInput.js'
 import { DragInput } from './DragInput.js'
 import { ControlPanel } from './ControlPanel.js'
 
+const BRUSH_MIN_FRAC = 0.006
+const BRUSH_MAX_FRAC = 0.14
+
 export class App {
   constructor(pixiApp) {
     this.app = pixiApp
     this.params = { ...DEFAULT_PARAMS }
     this.state = 'UPLOAD'
     this.tool = 'brush'
-    this.brushRadius = 40
+    this.brushFrac = 0.22
     this._painting = false
     // 双指缩放/平移：活动指针表 + pinch 状态（PAINT/PLAY 均可用，见 _onPointerDown/Move/Up）
     this._pointers = new Map() // pointerId -> {x,y}（相对 canvas 左上角，即 stage 坐标空间）
@@ -80,7 +83,7 @@ export class App {
     this.$('toolBrush').onclick = () => this._setTool('brush')
     this.$('toolErase').onclick = () => this._setTool('erase')
     this.$('clearBtn').onclick = () => this._clearMask()
-    this.$('brushSize').oninput = (e) => { this.brushRadius = parseFloat(e.target.value) }
+    this.$('brushSize').oninput = (e) => { this.brushFrac = parseFloat(e.target.value) }
     this.$('startBtn').onclick = () => this._start()
     // 指针管理：单指涂抹（仅 PAINT）+ 双指缩放/平移（PAINT/PLAY 都可用）
     const c = this.app.canvas
@@ -94,6 +97,11 @@ export class App {
   _pagePoint(e) {
     const r = this.app.canvas.getBoundingClientRect()
     return { x: e.clientX - r.left, y: e.clientY - r.top }
+  }
+
+  // 根据当前笔刷分数和照片显示宽度，计算网格空间中的笔刷半径（像素）
+  _brushR() {
+    return (BRUSH_MIN_FRAC + this.brushFrac * (BRUSH_MAX_FRAC - BRUSH_MIN_FRAC)) * this.fit.width
   }
 
   _onPointerDown(e) {
@@ -254,13 +262,14 @@ export class App {
   // 已经算好网格空间坐标时直接画（2→1 手指过渡时用，见 _onPointerUp）
   _paintAtLocal(p) {
     const erase = this.tool === 'erase'
+    const r = this._brushR()
     // 物理软度网格照旧更新（果冻抖动只看这个，跟视觉高亮完全解耦）
-    if (erase) this.maskPainter.erase(p.x, p.y, this.brushRadius, 0.5)
-    else this.maskPainter.paint(p.x, p.y, this.brushRadius, 0.5)
+    if (erase) this.maskPainter.erase(p.x, p.y, r, 0.5)
+    else this.maskPainter.paint(p.x, p.y, r, 0.5)
     // 视觉高亮：从上一个点连一段圆头粗线到当前点；_lastPaintPt 为空（笔画刚开始）时
     // from===to，退化成一个圆点（配合下面显式画的头部圆，效果就是一个笔刷起点）
     const from = this._lastPaintPt || p
-    this._paintStroke(from, p, erase)
+    this._paintStroke(from, p, erase, r)
     this._lastPaintPt = p
   }
 
@@ -268,12 +277,12 @@ export class App {
   // 橡皮用 'erase' 混合模式（destination-out）从 RT 里抠掉覆盖的白色区域。
   // clear:false 让笔画之间不断累积覆盖（同一像素被多次覆盖也只是保持不透明，不会越叠越深——
   // 深浅统一交给 _maskSprite 的 alpha=0.4 去决定，见 _onFile）。
-  _paintStroke(fromPt, toPt, erase) {
+  _paintStroke(fromPt, toPt, erase, r) {
     const g = this._stamp
     g.clear()
     g.moveTo(fromPt.x, fromPt.y).lineTo(toPt.x, toPt.y)
-    g.stroke({ width: 2 * this.brushRadius, color: 0xffffff, alpha: 1, cap: 'round', join: 'round' })
-    g.circle(toPt.x, toPt.y, this.brushRadius).fill({ color: 0xffffff, alpha: 1 })
+    g.stroke({ width: 2 * r, color: 0xffffff, alpha: 1, cap: 'round', join: 'round' })
+    g.circle(toPt.x, toPt.y, r).fill({ color: 0xffffff, alpha: 1 })
     g.blendMode = erase ? 'erase' : 'normal'
     this.app.renderer.render({ container: g, target: this._maskRT, clear: false })
   }
