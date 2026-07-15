@@ -1,4 +1,4 @@
-const DRAG_GRAB = 70 // 抓取半径：落点这个范围内所有软网点一起被抓住组成"一片"，没有软点则视为落空
+const DRAG_GRAB = 110 // 抓取半径：落点这个范围内所有软网点一起被抓住组成"一片"，没有软点则视为落空
 
 export class DragInput {
   constructor(canvas, solver, grid, meshObj) {
@@ -17,7 +17,8 @@ export class DragInput {
     this._pointerId = null // 当前抓取所属的 pointerId：_up 靠它判断"抬起的是不是正在拖拽的那根手指"，
     // 否则 2→1 过渡时 App._onPointerUp 里 resumeAt() 刚重新抓起剩下那根手指，
     // 紧接着触发本类自己监听的同一个 pointerup（抬起的是另一根、刚失效的手指）会把它清掉
-    this._grabbed = [] // 本次抓取的一片软网点：[{i, dx, dy}, ...]，dx/dy 为该点相对抓取落点的原始偏移
+    this._grabbed = [] // 本次抓取的一片软网点：[{i, rx, ry, w}, ...]，rx/ry 为该点静止坐标，
+    // w 为余弦衰减权重（抓取中心 w=1，半径边缘 w→0），决定该点跟随手指位移的比例
     this._down = this._down.bind(this)
     this._move = this._move.bind(this)
     this._up = this._up.bind(this)
@@ -46,21 +47,25 @@ export class DragInput {
   }
 
   // 在 localPoint 处尝试抓取一片软网点（圆润"一块"，而非单点）：
-  // 落点 DRAG_GRAB 半径内所有软网点都记录相对偏移并一起钉住；半径内没有软点则视为落空。
+  // 落点 DRAG_GRAB 半径内所有软网点都按余弦衰减记下权重并一起钉住；半径内没有软点则视为落空。
+  // 权重 w：抓取中心 w=1（完全跟手），半径边缘 w→0（几乎不动）——移动时各点跟随手指的比例
+  // 按 w 缩放，呈现出中心整块跟随、边缘平滑过渡的"史莱姆"拉伸，而不是整片刚体平移。
   // 成功返回 true 并把 pins 推给 solver；落空返回 false（不改动任何状态）。
   _grabAt(localPoint) {
     const g = this.grid
     const grabbed = []
     for (let i = 0; i < g.softness.length; i++) {
       if (g.softness[i] <= 0) continue
-      const dx = g.restX[i] - localPoint.x
-      const dy = g.restY[i] - localPoint.y
-      if (Math.hypot(dx, dy) <= DRAG_GRAB) grabbed.push({ i, dx, dy })
+      const d = Math.hypot(g.restX[i] - localPoint.x, g.restY[i] - localPoint.y)
+      if (d <= DRAG_GRAB) {
+        const w = 0.5 * (1 + Math.cos(Math.PI * d / DRAG_GRAB))
+        grabbed.push({ i, rx: g.restX[i], ry: g.restY[i], w })
+      }
     }
     if (grabbed.length === 0) return false
     this._grabbed = grabbed
     const pins = new Map()
-    for (const { i, dx, dy } of grabbed) pins.set(i, { x: localPoint.x + dx, y: localPoint.y + dy })
+    for (const { i, rx, ry } of grabbed) pins.set(i, { x: rx, y: ry })
     this.solver.setPins(pins)
     this.dragCenter = { x: localPoint.x, y: localPoint.y }
     this.grabOrigin = { x: localPoint.x, y: localPoint.y }
@@ -77,10 +82,12 @@ export class DragInput {
   _move(e) {
     if (!this.active || this.suspended) return
     const p = this._local(e)
-    const pins = new Map()
-    for (const { i, dx, dy } of this._grabbed) pins.set(i, { x: p.x + dx, y: p.y + dy })
-    this.solver.setPins(pins)
     this.dragCenter = { x: p.x, y: p.y }
+    const ddx = p.x - this.grabOrigin.x
+    const ddy = p.y - this.grabOrigin.y
+    const pins = new Map()
+    for (const { i, rx, ry, w } of this._grabbed) pins.set(i, { x: rx + ddx * w, y: ry + ddy * w })
+    this.solver.setPins(pins)
   }
   _up(e) {
     if (!this.active) return
