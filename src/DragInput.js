@@ -1,4 +1,5 @@
-const DRAG_GRAB = 110 // 抓取半径：落点这个范围内所有软网点一起被抓住组成"一片"，没有软点则视为落空
+const PICK_FRAC = 0.10 // 手指必须落在离某个软网点 <= 10% 照片宽度内，才算摸到了涂抹区域
+const FALLOFF_FRAC = 0.24 // 余弦衰减半径相对照片宽度的比例
 
 export class DragInput {
   constructor(canvas, solver, grid, meshObj) {
@@ -46,23 +47,63 @@ export class DragInput {
     return this.meshObj.toLocal({ x: e.clientX - r.left, y: e.clientY - r.top })
   }
 
-  // 在 localPoint 处尝试抓取一片软网点（圆润"一块"，而非单点）：
-  // 落点 DRAG_GRAB 半径内所有软网点都按余弦衰减记下权重并一起钉住；半径内没有软点则视为落空。
-  // 权重 w：抓取中心 w=1（完全跟手），半径边缘 w→0（几乎不动）——移动时各点跟随手指的比例
-  // 按 w 缩放，呈现出中心整块跟随、边缘平滑过渡的"史莱姆"拉伸，而不是整片刚体平移。
+  // 在 localPoint 处尝试抓取手指所在的那"一块"连通涂抹区域（而非固定半径内的所有软网点）：
+  // 1) 先在软网点里找离落点最近的一个，若最近距离超过 pickR（相对照片宽度）则视为没摸到，落空；
+  // 2) 以它为起点，在网格上做 4 邻居 BFS，只穿过 softness>0 的网点——遇到未涂抹的网点（softness<=0）
+  //    就不再穿过去，天然把落点所在的这一块和隔着空隙的其它涂抹块分开，互不牵连；
+  // 3) 连通块内的点再按离落点的距离做余弦衰减（半径 R，同样相对照片宽度），落在 R 外的点权重趋近于 0，
+  //    使拉扯效果保持"局部"，即使连通块本身很大也不会整块跟着平移。
   // 成功返回 true 并把 pins 推给 solver；落空返回 false（不改动任何状态）。
   _grabAt(localPoint) {
     const g = this.grid
-    const grabbed = []
+    const imgW = g.restX[g.cols - 1] // 照片显示宽度（rest 坐标下最后一列的 x，等于 fit.width）
+    const pickR = PICK_FRAC * imgW
+    const R = FALLOFF_FRAC * imgW
+
+    // 1) 找离落点最近的软网点作为起点
+    let start = -1
+    let bestD = Infinity
     for (let i = 0; i < g.softness.length; i++) {
       if (g.softness[i] <= 0) continue
       const d = Math.hypot(g.restX[i] - localPoint.x, g.restY[i] - localPoint.y)
-      if (d <= DRAG_GRAB) {
-        const w = 0.5 * (1 + Math.cos(Math.PI * d / DRAG_GRAB))
+      if (d < bestD) { bestD = d; start = i }
+    }
+    if (start < 0 || bestD > pickR) return false
+
+    // 2) 从起点 BFS，只穿过软网点，收集落点所在的连通块
+    const { cols, rows } = g
+    const visited = new Set([start])
+    const queue = [start]
+    const region = []
+    while (queue.length) {
+      const i = queue.pop()
+      region.push(i)
+      const col = i % cols
+      const row = (i - col) / cols
+      const neighbors = [
+        col + 1 < cols ? i + 1 : -1,
+        col - 1 >= 0 ? i - 1 : -1,
+        row + 1 < rows ? i + cols : -1,
+        row - 1 >= 0 ? i - cols : -1,
+      ]
+      for (const j of neighbors) {
+        if (j < 0 || visited.has(j) || g.softness[j] <= 0) continue
+        visited.add(j)
+        queue.push(j)
+      }
+    }
+
+    // 3) 连通块内按距离余弦衰减，超出 R 的点权重趋近 0
+    const grabbed = []
+    for (const i of region) {
+      const d = Math.hypot(g.restX[i] - localPoint.x, g.restY[i] - localPoint.y)
+      if (d <= R) {
+        const w = 0.5 * (1 + Math.cos(Math.PI * d / R))
         grabbed.push({ i, rx: g.restX[i], ry: g.restY[i], w })
       }
     }
     if (grabbed.length === 0) return false
+
     this._grabbed = grabbed
     const pins = new Map()
     for (const { i, rx, ry } of grabbed) pins.set(i, { x: rx, y: ry })
